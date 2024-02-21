@@ -2,10 +2,17 @@ using ElectronNET.API;
 using ElectronNET.API.Entities;
 using log4net;
 using log4net.Config;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using R3E;
 using SignalRChat.Hubs;
+using System.IO;
+using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Reflection;
 
@@ -32,6 +39,7 @@ public class Startup
         services.AddSignalR();
         services.AddRazorPages();
     }
+
 
     // This method gets called by the runtime. Use this method to configure the HTTP request pipeline.
     public void Configure(IApplicationBuilder app, IWebHostEnvironment env) {
@@ -72,7 +80,7 @@ public class Startup
             }
         });
 
-        if (env.IsDevelopment()) {
+        if (env.EnvironmentName == Environments.Development) {
             app.UseDeveloperExceptionPage();
         }
         else {
