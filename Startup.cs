@@ -1,32 +1,28 @@
 using ElectronNET.API;
 using ElectronNET.API.Entities;
 using log4net;
-using log4net.Config;
-using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.Hosting;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using R3E;
+using ReHUD.Interfaces;
 using SignalRChat.Hubs;
 using System.IO;
-using System.Net.Http;
-using System.Net.Http.Headers;
 using System.Reflection;
+
+using MessageBoxType = ElectronNET.API.Entities.MessageBoxType;
 
 namespace ReHUD;
 
 public class Startup
 {
     public static readonly ILog logger = LogManager.GetLogger(MethodBase.GetCurrentMethod()?.DeclaringType);
-    string? logFilePath;
+    private static string? LogFilePath { get => (App.Current as App)?.LogFilePath; }
 
     private static readonly List<string> raceroomProcessNames = new() { "RRRE", "RRRE64" };
 
     private ProcessObserver raceroomObserver;
     private SharedMemory sharedMemory;
+    private IVersionService versionService;
 
     public Startup(IConfiguration configuration) {
         Configuration = configuration;
@@ -34,28 +30,17 @@ public class Startup
 
     public IConfiguration Configuration { get; }
 
-    // This method gets called by the runtime. Use this method to add services to the container.
-    public void ConfigureServices(IServiceCollection services) {
-        services.AddSignalR();
-        services.AddRazorPages();
-    }
-
 
     // This method gets called by the runtime. Use this method to configure the HTTP request pipeline.
-    public void Configure(IApplicationBuilder app, IWebHostEnvironment env) {
-        logFilePath = Path.Combine(JsonUserData.dataPath, "ReHUD.log");
-        GlobalContext.Properties["LogFilePath"] = logFilePath;
-
-        var logRepository = LogManager.GetRepository(Assembly.GetEntryAssembly());
-        XmlConfigurator.Configure(logRepository, new FileInfo("log4net.config"));
-
+    public void Configure(IApplicationBuilder app, IWebHostEnvironment env, IVersionService versionService) {
+        this.versionService = versionService;
         raceroomObserver = new(raceroomProcessNames);
         sharedMemory = new(raceroomObserver, null);
 
         raceroomObserver.Start();
 
         version.Load();
-        _ = AppVersion().ContinueWith(async (t) => {
+        _ = versionService.GetCurrentAppVersion().ContinueWith(async (t) => {
             await version.Update(t.Result);
             lapPointsData.Load();
             settings.Load();
@@ -131,8 +116,6 @@ public class Startup
     public static BrowserWindow? MainWindow { get; private set; }
     public static BrowserWindow? SettingsWindow { get; private set; }
 
-    private const string githubUrl = "https://github.com/Yuvix25/ReHUD";
-    private const string githubReleasesUrl = "releases/latest";
     private const string anotherInstanceMessage = "Another instance of ReHUD is already running";
     private const string logFilePathWarning = "Log file path could not be determined. Try searching for a file named 'ReHUD.log' in C:\\Users\\<username>\\Documents\\ReHUD";
 
@@ -342,7 +325,7 @@ public class Startup
     private async Task InitSettingsWindow() {
         Electron.IpcMain.Send(MainWindow, "settings", settings.Serialize());
         Electron.IpcMain.Send(SettingsWindow, "settings", settings.Serialize());
-        Electron.IpcMain.Send(SettingsWindow, "version", await AppVersion());
+        Electron.IpcMain.Send(SettingsWindow, "version", await versionService.GetCurrentAppVersion());
     }
 
 
@@ -375,7 +358,7 @@ public class Startup
         });
 
         await Electron.IpcMain.On("check-for-updates", async (data) => {
-            await CheckForUpdates();
+            await versionService.CheckForUpdates();
         });
 
         await Electron.IpcMain.On("lock-overlay", async (data) => {
@@ -448,11 +431,11 @@ public class Startup
 
 
         await Electron.IpcMain.On("show-log-file", async (arg) => {
-            if (logFilePath == null) {
+            if (LogFilePath == null) {
                 await ShowMessageBox(SettingsWindow, logFilePathWarning, "Warning", MessageBoxType.warning);
             }
             else {
-                await Electron.Shell.ShowItemInFolderAsync(Path.Combine(logFilePath));
+                await Electron.Shell.ShowItemInFolderAsync(Path.Combine(LogFilePath));
             }
         });
 
@@ -488,64 +471,6 @@ public class Startup
                 return ((JValue)token).Value ?? token;
         }
     }
-
-    private string? appVersion;
-    private async Task<string> AppVersion() {
-        return appVersion ??= await Electron.App.GetVersionAsync();
-    }
-
-
-
-    private async Task CheckForUpdates() {
-        string currentVersion = await AppVersion();
-        logger.Info("Checking for updates (current version: v" + currentVersion + ")");
-        string? remoteUrl = await GetRedirectedUrl(githubUrl + "/" + githubReleasesUrl);
-        if (remoteUrl == null) {
-            logger.Error("Could not get remote URL for checking updates");
-            return;
-        }
-
-        string remoteVersionText = remoteUrl.Split('/')[^1];
-
-        Version current = ReHUDVersion.TrimVersion(currentVersion);
-        Version remote = ReHUDVersion.TrimVersion(remoteVersionText);
-
-        if (current.CompareTo(remote) < 0) {
-            logger.Info("Update available: " + remoteVersionText);
-
-            await ShowMessageBox("A new version is available: " + remoteVersionText, new string[] { "Show me", "Cancel" }, "Update available", MessageBoxType.info).ContinueWith((t) => {
-                if (t.Result.Response == 0) {
-                    Electron.Shell.OpenExternalAsync(remoteUrl);
-                }
-            });
-
-            return;
-        }
-        logger.Info("No updates available");
-    }
-
-    public static async Task<string?> GetRedirectedUrl(string url) {
-        //this allows you to set the settings so that we can get the redirect url
-        var handler = new HttpClientHandler() {
-            AllowAutoRedirect = false
-        };
-        string? redirectedUrl = null;
-
-        using (HttpClient client = new(handler))
-        using (HttpResponseMessage response = await client.GetAsync(url))
-        using (HttpContent content = response.Content) {
-            // ... Read the response to see if we have the redirected url
-            if (response.StatusCode == System.Net.HttpStatusCode.Found) {
-                HttpResponseHeaders headers = response.Headers;
-                if (headers != null && headers.Location != null) {
-                    redirectedUrl = headers.Location.AbsoluteUri;
-                }
-            }
-        }
-
-        return redirectedUrl;
-    }
-
 
     public static async Task<MessageBoxResult> ShowMessageBox(BrowserWindow? window, string message, string title = "Error", MessageBoxType type = MessageBoxType.error) {
         MessageBoxOptions options = PrepareMessageBox(message, title, type);
